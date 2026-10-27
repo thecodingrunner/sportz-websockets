@@ -22,25 +22,40 @@ export function attachWebSocketServer(server) {
         maxPayload: 1024 * 1024,
     })
 
-    wss.on('connection', async (socket, req) => {
-        if (wsArcJet) {
+    server.on('upgrade', (request, socket, head) => {
+        const { pathname } = new URL(req.url, `http://${req.headers.host}`);
+
+        if (pathname !== '/ws') {
+            return;
+        }
+
+        if (wsArcjet) {
             try {
-                const decision = await wsArcJet.protect(req);
+                const decision = await wsArcJet.protect(request);
 
                 if (decision.isDenied()) {
-                    const code = decision.reason.isRateLimit() ? 1013 : 1008;
-                    const reason = decision.reason.isRateLimit() ? 'Rate limit exceeded' : 'Access denined';
-
-                    socket.close(code, reason);
+                    if (decision.reason.isRateLimit()) {
+                        socket.write('HTTP/1.1 429 Too Many Requests\r\n\r\n');
+                    } else {
+                        socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+                    }
+                    socket.destroy();
                     return;
                 }
             } catch (e) {
-                console.error('WS connection error', e);
-                socket.close(1011, 'Server security error');
+                console.error('WS upgrade error', e);
+                socket.write('HTTP/1.1 500 Service Unavailable\r\n\r\n');
+                socket.destroy();
                 return;
             }
         }
 
+        wss.handleUpgrade(req, socket, head, (ws) => {
+            wss.emit('connection', ws, req);
+        });
+    })
+
+    wss.on('connection', async (socket, req) => {
         socket.isAlive = true;
         socket.on('pong', () => {
             socket.isAlive = true;
